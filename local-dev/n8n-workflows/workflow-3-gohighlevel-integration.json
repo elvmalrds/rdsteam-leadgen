@@ -1,0 +1,68 @@
+{
+  "name": "RDS Lead Generation - GoHighLevel Integration",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "/webhook/gohighlevel",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ghl-webhook",
+      "name": "GoHighLevel Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "gohighlevel-integration-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process leads for GoHighLevel integration\nconst leads = $json.body.leads || [];\nconst processingSummary = $json.body.processing_summary || {};\nconst timestamp = $json.body.timestamp;\n\nif (leads.length === 0) {\n  return { skip: true, message: 'No leads to process for GoHighLevel' };\n}\n\n// Categorize leads by intent score for campaign assignment\nconst leadsByCategory = {\n  hot: [],      // 90+\n  warm: [],     // 80-89\n  qualified: [] // 70-79\n};\n\nleads.forEach(lead => {\n  const score = lead.intent_score;\n  if (score >= 90) {\n    leadsByCategory.hot.push(lead);\n  } else if (score >= 80) {\n    leadsByCategory.warm.push(lead);\n  } else {\n    leadsByCategory.qualified.push(lead);\n  }\n});\n\n// Assign campaigns based on intent score\nconst campaignMapping = {\n  hot: 'hot-leads-immediate-followup',\n  warm: 'warm-leads-nurture-sequence', \n  qualified: 'qualified-leads-general-sequence'\n};\n\nconst processedLeads = leads.map(lead => {\n  let category = 'qualified';\n  if (lead.intent_score >= 90) category = 'hot';\n  else if (lead.intent_score >= 80) category = 'warm';\n  \n  return {\n    ...lead,\n    category: category,\n    campaign_id: campaignMapping[category],\n    tags: [\n      'lead411-import',\n      `intent-score-${lead.intent_score}`,\n      `category-${category}`,\n      'vtiger-synced'\n    ]\n  };\n});\n\nconsole.log('GoHighLevel processing:');\nconsole.log('- Total leads:', leads.length);\nconsole.log('- Hot leads:', leadsByCategory.hot.length);\nconsole.log('- Warm leads:', leadsByCategory.warm.length);\nconsole.log('- Qualified leads:', leadsByCategory.qualified.length);\n\nreturn {\n  leads: processedLeads,\n  categories: leadsByCategory,\n  campaign_assignments: campaignMapping,\n  total_count: leads.length,\n  timestamp: timestamp\n};"
+      },
+      "id": "process-leads",
+      "name": "Process Leads for GHL",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "skip-check",
+      "name": "Skip Processing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "split-leads",
+      "name": "Split into Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare individual lead for GoHighLevel API\nconst lead = $json;\n\n// Create GoHighLevel contact data\nconst ghlContact = {\n  firstName: lead.company.split(' ')[0], // Use first word of company as firstName\n  lastName: lead.company.split(' ').slice(1).join(' ') || 'Lead', // Rest as lastName\n  email: lead.email || '', \n  phone: lead.phone || '',\n  companyName: lead.company,\n  website: lead.website || '',\n  source: 'Lead411 Intent Data',\n  tags: lead.tags,\n  customFields: {\n    intent_score: lead.intent_score.toString(),\n    vtiger_lead_id: lead.lead_id,\n    lead_category: lead.category,\n    import_date: new Date().toISOString().split('T')[0],\n    processing_timestamp: lead.timestamp\n  }\n};\n\nreturn {\n  ghl_contact: ghlContact,\n  campaign_id: lead.campaign_id,\n  lead_info: {\n    company: lead.company,\n    intent_score: lead.intent_score,\n    category: lead.category,\n    vtiger_id: lead.lead_id\n  }\n};"
+      },
+      "id": "format-contact",
+      "name": "Format GHL Contact",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://rest.gohighlevel.com/v1/contacts",\n        "authentication": "genericCredentialType",\n        "genericAuthType": "httpHeaderAuth",\n        "sendHeaders": true,\n        "specifyHeaders": "json",\n        "jsonHeaders": "{\n  \"Authorization\": \"Bearer YOUR_GHL_API_KEY\",\n  \"Content-Type\": \"application/json\"\n}",\n        "sendBody": true,\n        "specifyBody": "json",\n        "jsonBody": "={{ JSON.stringify($json.ghl_contact) }}",\n        "options": {}\n      },\n      "id": "create-ghl-contact",\n      "name": "Create GHL Contact",\n      "type": "n8n-nodes-base.httpRequest",\n      "typeVersion": 3,\n      "position": [1340, 200]\n    },\n    {\n      "parameters": {\n        "url": "https://rest.gohighlevel.com/v1/campaigns/{{ $json.campaign_id }}/subscribers",\n        "authentication": "genericCredentialType",\n        "genericAuthType": "httpHeaderAuth",\n        "sendHeaders": true,\n        "specifyHeaders": "json",\n        "jsonHeaders": "{\n  \"Authorization\": \"Bearer YOUR_GHL_API_KEY\",\n  \"Content-Type\": \"application/json\"\n}",\n        "sendBody": true,\n        "specifyBody": "json",\n        "jsonBody": "{\n  \"contactId\": \"{{ $json.contact.id }}\",\n  \"status\": \"active\"\n}",\n        "options": {}\n      },\n      "id": "assign-campaign",\n      "name": "Assign to Campaign",\n      "type": "n8n-nodes-base.httpRequest",\n      "typeVersion": 3,\n      "position": [1560, 200]\n    },\n    {\n      "parameters": {\n        "functionCode": "// Log successful GoHighLevel integration\nconst contactResponse = $json;\nconst leadInfo = $('Format GHL Contact').item.json.lead_info;\nconst campaignId = $('Format GHL Contact').item.json.campaign_id;\n\nif (!contactResponse.contact) {\n  throw new Error('Failed to create GoHighLevel contact');\n}\n\nconst result = {\n  success: true,\n  ghl_contact_id: contactResponse.contact.id,\n  vtiger_lead_id: leadInfo.vtiger_id,\n  company: leadInfo.company,\n  intent_score: leadInfo.intent_score,\n  category: leadInfo.category,\n  campaign_assigned: campaignId,\n  processed_at: new Date().toISOString()\n};\n\nconsole.log('Successfully processed lead:', leadInfo.company, 'to GoHighLevel');\n\nreturn result;"\n      },\n      "id": "log-success",\n      "name": "Log Success",\n      "type": "n8n-nodes-base.function",\n      "typeVersion": 1,\n      "position": [1780, 200]\n    },\n    {\n      "parameters": {\n        "respondWith": "json",\n        "responseBody": "{\n  \"success\": true,\n  \"message\": \"GoHighLevel integration completed\",\n  \"leads_processed\": {{ $json.total_count || 0 }},\n  \"campaigns_assigned\": {\n    \"hot_leads\": {{ $json.categories.hot.length || 0 }},\n    \"warm_leads\": {{ $json.categories.warm.length || 0 }},\n    \"qualified_leads\": {{ $json.categories.qualified.length || 0 }}\n  },\n  \"timestamp\": \"{{ $json.timestamp }}\"\n}"\n      },\n      "id": "success-response",\n      "name": "Success Response",\n      "type": "n8n-nodes-base.respondToWebhook",\n      "typeVersion": 1,\n      "position": [900, 400]\n    },\n    {\n      "parameters": {\n        "respondWith": "json",\n        "responseBody": "{\n  \"success\": true,\n  \"message\": \"No leads to process for GoHighLevel\",\n  \"leads_processed\": 0,\n  \"timestamp\": \"{{ new Date().toISOString() }}\"\n}"\n      },\n      "id": "skip-response",\n      "name": "Skip Response",\n      "type": "n8n-nodes-base.respondToWebhook",\n      "typeVersion": 1,\n      "position": [900, 500]\n    }\n  ],\n  "connections": {\n    "GoHighLevel Webhook": {\n      "main": [\n        [\n          {\n            "node": "Process Leads for GHL",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Process Leads for GHL": {\n      "main": [\n        [\n          {\n            "node": "Skip Processing?",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Skip Processing?": {\n      "main": [\n        [\n          {\n            "node": "Split into Batches",\n            "type": "main",\n            "index": 0\n          },\n          {\n            "node": "Success Response",\n            "type": "main",\n            "index": 0\n          }\n        ],\n        [\n          {\n            "node": "Skip Response",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Split into Batches": {\n      "main": [\n        [\n          {\n            "node": "Format GHL Contact",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Format GHL Contact": {\n      "main": [\n        [\n          {\n            "node": "Create GHL Contact",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Create GHL Contact": {\n      "main": [\n        [\n          {\n            "node": "Assign to Campaign",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    },\n    "Assign to Campaign": {\n      "main": [\n        [\n          {\n            "node": "Log Success",\n            "type": "main",\n            "index": 0\n          }\n        ]\n      ]\n    }\n  },\n  "active": false,\n  "settings": {},\n  "staticData": {},\n  "id": "gohighlevel-integration-workflow",\n  "meta": {\n    "instanceId": "rds-leadgen-local"\n  },\n  "tags": [\n    {\n      "createdAt": "2025-09-11T12:00:00.000Z",\n      "updatedAt": "2025-09-11T12:00:00.000Z",\n      "id": "rds-leadgen",\n      "name": "RDS Lead Generation"\n    }\n  ]\n}

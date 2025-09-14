@@ -1,0 +1,225 @@
+{
+  "name": "RDS Lead Generation - CSV Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "/webhook/csv-upload",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "csv-webhook-trigger",
+      "name": "CSV Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "csv-processing-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// CSV Processing and Validation\nconst csvData = $json.body;\nconst options = {\n  testMode: csvData.test_mode || false,\n  autoAssign: csvData.auto_assign || true,\n  intentScoreThreshold: 70\n};\n\n// Process CSV file path\nconst filePath = csvData.file_path;\nconst processingId = csvData.processing_id;\n\nconsole.log('Processing CSV file:', filePath);\nconsole.log('Processing options:', options);\n\n// Return data for next node\nreturn {\n  file_path: filePath,\n  processing_id: processingId,\n  options: options,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "id": "csv-processor",
+      "name": "Process CSV Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost/leadgen/api/vtiger.php",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Content-Type\": \"application/json\"\n}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"action\": \"process_csv_file\",\n  \"file_path\": \"{{ $json.file_path }}\",\n  \"options\": {\n    \"test_mode\": {{ $json.options.testMode }},\n    \"auto_assign\": {{ $json.options.autoAssign }}\n  }\n}",
+        "options": {}
+      },
+      "id": "vtiger-integration",
+      "name": "VTiger Lead Creation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Process VTiger response and prepare for next workflow\nconst response = $json;\n\nif (!response.success) {\n  throw new Error('VTiger processing failed: ' + response.error);\n}\n\nconst results = response.data;\nconst highIntentLeads = [];\nconst processedLeads = [];\n\n// Extract high-intent leads (score >= 90) for immediate notification\nresults.details.forEach(lead => {\n  if (lead.status === 'created') {\n    processedLeads.push({\n      lead_id: lead.lead_id,\n      company: lead.company,\n      intent_score: lead.intent_score,\n      is_hot_lead: lead.intent_score >= 90\n    });\n    \n    if (lead.intent_score >= 90) {\n      highIntentLeads.push(lead);\n    }\n  }\n});\n\nconsole.log('VTiger processing completed:');\nconsole.log('- Total processed:', results.processed);\nconsole.log('- Successfully created:', results.created);\nconsole.log('- High intent leads:', highIntentLeads.length);\n\nreturn {\n  processing_summary: {\n    processed: results.processed,\n    created: results.created,\n    skipped: results.skipped,\n    errors: results.errors\n  },\n  high_intent_leads: highIntentLeads,\n  all_leads: processedLeads,\n  timestamp: new Date().toISOString()\n};"
+      },
+      "id": "response-processor",
+      "name": "Process Results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.high_intent_leads.length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "hot-leads-check",
+      "name": "Has Hot Leads?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/hot-leads",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Content-Type\": \"application/json\"\n}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"hot_leads\": {{ JSON.stringify($json.high_intent_leads) }},\n  \"processing_summary\": {{ JSON.stringify($json.processing_summary) }},\n  \"timestamp\": \"{{ $json.timestamp }}\"\n}",
+        "options": {}
+      },
+      "id": "hot-leads-webhook",
+      "name": "Trigger Hot Leads Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:5678/webhook/gohighlevel",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\n  \"Content-Type\": \"application/json\"\n}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"leads\": {{ JSON.stringify($json.all_leads) }},\n  \"processing_summary\": {{ JSON.stringify($json.processing_summary) }},\n  \"timestamp\": \"{{ $json.timestamp }}\"\n}",
+        "options": {}
+      },
+      "id": "ghl-webhook",
+      "name": "Trigger GoHighLevel Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"success\": true,\n  \"message\": \"CSV processing completed successfully\",\n  \"processing_summary\": {{ JSON.stringify($json.processing_summary) }},\n  \"high_intent_leads\": {{ $json.high_intent_leads.length }},\n  \"timestamp\": \"{{ $json.timestamp }}\"\n}"
+      },
+      "id": "webhook-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "CSV Upload Webhook": {
+      "main": [
+        [
+          {
+            "node": "Process CSV Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process CSV Data": {
+      "main": [
+        [
+          {
+            "node": "VTiger Lead Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VTiger Lead Creation": {
+      "main": [
+        [
+          {
+            "node": "Process Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Results": {
+      "main": [
+        [
+          {
+            "node": "Has Hot Leads?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Hot Leads?": {
+      "main": [
+        [
+          {
+            "node": "Trigger Hot Leads Workflow",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Trigger GoHighLevel Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Trigger GoHighLevel Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Hot Leads Workflow": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger GoHighLevel Workflow": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "staticData": {},
+  "id": "csv-processing-workflow",
+  "meta": {
+    "instanceId": "rds-leadgen-local"
+  },
+  "tags": [
+    {
+      "createdAt": "2025-09-11T12:00:00.000Z",
+      "updatedAt": "2025-09-11T12:00:00.000Z",
+      "id": "rds-leadgen",
+      "name": "RDS Lead Generation"
+    }
+  ]
+}
